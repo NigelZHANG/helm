@@ -61,6 +61,8 @@ type Upgrade struct {
 	Namespace string
 	// SkipCRDs skips installing CRDs when install flag is enabled during upgrade
 	SkipCRDs bool
+	// UpdateCRDs update crds when upgrade chart verison
+	UpdateCRDs bool
 	// Timeout is the timeout for this operation
 	Timeout time.Duration
 	// Wait determines whether the wait operation should be performed after the upgrade is requested.
@@ -167,6 +169,13 @@ func (u *Upgrade) RunWithContext(ctx context.Context, name string, chart *chart.
 func (u *Upgrade) prepareUpgrade(name string, chart *chart.Chart, vals map[string]interface{}) (*release.Release, *release.Release, error) {
 	if chart == nil {
 		return nil, nil, errMissingChart
+	}
+
+	// install crds if update is set
+	if crds := chart.CRDObjects(); len(crds) > 0 && u.UpdateCRDs {
+		if err := InstallCRDs(u.cfg, crds, true); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	// finds the last non-deleted release with the given name
