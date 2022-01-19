@@ -86,6 +86,7 @@ type Install struct {
 	OutputDir                string
 	Atomic                   bool
 	SkipCRDs                 bool
+	UpdateCRDs               bool
 	SubNotes                 bool
 	DisableOpenAPIValidation bool
 	IncludeCRDs              bool
@@ -133,22 +134,28 @@ func NewInstall(cfg *Configuration) *Install {
 	return in
 }
 
-func (i *Install) installCRDs(crds []chart.CRD) error {
+func InstallCRDs(cfg *Configuration, crds []chart.CRD, update bool) error {
 	// We do these one file at a time in the order they were read.
 	totalItems := []*resource.Info{}
 	for _, obj := range crds {
 		// Read in the resources
-		res, err := i.cfg.KubeClient.Build(bytes.NewBuffer(obj.File.Data), false)
+		res, err := cfg.KubeClient.Build(bytes.NewBuffer(obj.File.Data), false)
 		if err != nil {
 			return errors.Wrapf(err, "failed to install CRD %s", obj.Name)
 		}
 
 		// Send them to Kube
-		if _, err := i.cfg.KubeClient.Create(res); err != nil {
-			// If the error is CRD already exists, continue.
+		if _, err := cfg.KubeClient.Create(res); err != nil {
 			if apierrors.IsAlreadyExists(err) {
 				crdName := res[0].Name
-				i.cfg.Log("CRD %s is already present. Skipping.", crdName)
+				if update {
+					if _, err := cfg.KubeClient.Update(res, res, true); err != nil {
+						return errors.Wrapf(err, "failed to update CRD %s", crdName)
+					}
+					totalItems = append(totalItems, res...)
+					continue
+				}
+				cfg.Log("CRD %s is already present. Skipping.", crdName)
 				continue
 			}
 			return errors.Wrapf(err, "failed to install CRD %s", obj.Name)
@@ -158,15 +165,15 @@ func (i *Install) installCRDs(crds []chart.CRD) error {
 	if len(totalItems) > 0 {
 		// Invalidate the local cache, since it will not have the new CRDs
 		// present.
-		discoveryClient, err := i.cfg.RESTClientGetter.ToDiscoveryClient()
+		discoveryClient, err := cfg.RESTClientGetter.ToDiscoveryClient()
 		if err != nil {
 			return err
 		}
-		i.cfg.Log("Clearing discovery cache")
+		cfg.Log("Clearing discovery cache")
 		discoveryClient.Invalidate()
 		// Give time for the CRD to be recognized.
 
-		if err := i.cfg.KubeClient.Wait(totalItems, 60*time.Second); err != nil {
+		if err := cfg.KubeClient.Wait(totalItems, 60*time.Second); err != nil {
 			return err
 		}
 
@@ -208,7 +215,7 @@ func (i *Install) RunWithContext(ctx context.Context, chrt *chart.Chart, vals ma
 		// On dry run, bail here
 		if i.DryRun {
 			i.cfg.Log("WARNING: This chart or one of its subcharts contains CRDs. Rendering may fail or contain inaccuracies.")
-		} else if err := i.installCRDs(crds); err != nil {
+		} else if err := InstallCRDs(i.cfg, crds, i.UpdateCRDs); err != nil {
 			return nil, err
 		}
 	}
